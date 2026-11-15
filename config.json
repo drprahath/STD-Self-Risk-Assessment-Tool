@@ -1,0 +1,171 @@
+{
+  "app_name": "STD Self-Risk Assessment Tool",
+  "version": "1.0",
+  "author": "Healthcare Innovation Team",
+  "description": "A comprehensive web-based tool for STI risk assessment and education",
+  "created_date": "2024-11-15",
+  
+  "app_settings": {
+    "theme": "light",
+    "language": "English",
+    "default_port": 8501,
+    "debug_mode": false,
+    "enable_data_persistence": true,
+    "data_storage_format": "JSON"
+  },
+  
+  "risk_assessment_config": {
+    "total_max_score": 18,
+    "scoring_factors": 6,
+    "risk_categories": {
+      "low": {
+        "range": "0-2",
+        "color": "green",
+        "emoji": "🟢"
+      },
+      "moderate": {
+        "range": "3-5",
+        "color": "yellow",
+        "emoji": "🟡"
+      },
+      "high": {
+        "range": "6-9",
+        "color": "red",
+        "emoji": "🔴"
+      },
+      "very_high": {
+        "range": "10+",
+        "color": "dark_red",
+        "emoji": "🔴"
+      }
+    }
+  },
+  
+  "stis_covered": 7,
+  "stis_list": [
+    "Chlamydia",
+    "Gonorrhea",
+    "Syphilis",
+    "Herpes (HSV)",
+    "HPV",
+    "HIV",
+    "Hepatitis B"
+  ],
+  
+  "features": [
+    "Personal Risk Assessment",
+    "Patient Data Management",
+    "Personalized Recommendations",
+    "STD Information Database",
+    "Assessment History Tracking",
+    "Risk Score Calculation",
+    "Local Data Storage",
+    "User-Friendly Interface"
+  ],
+  
+  "system_requirements": {
+    "python_version": "3.8+",
+    "operating_systems": ["Windows", "macOS", "Linux"],
+    "minimum_ram": "512 MB",
+    "minimum_storage": "10 MB",
+    "required_packages": [
+      "streamlit>=1.28.0",
+      "pandas>=2.0.0",
+      "numpy>=1.25.0"
+    ]
+  },
+  
+  "file_structure": {
+    "std_risk_assessment_app.py": "Main application file",
+    "requirements.txt": "Python dependencies",
+    "README.md": "Comprehensive documentation",
+    "QUICKSTART.md": "Quick start guide",
+    "config.json": "Configuration settings",
+    "patient_records.json": "Auto-generated patient data storage"
+  },
+  
+  "data_fields": {
+    "patient_personal": [
+      "name",
+      "age",
+      "gender",
+      "email"
+    ],
+    "sexual_behavior": [
+      "number_of_partners",
+      "protection_usage"
+    ],
+    "medical_history": [
+      "previous_sti",
+      "partner_sti_history",
+      "last_test_date"
+    ],
+    "health_status": [
+      "current_symptoms",
+      "symptom_details"
+    ],
+    "assessment_result": [
+      "risk_score",
+      "risk_category",
+      "assessment_date"
+    ]
+  },
+  
+  "recommendations": {
+    "low_risk": [
+      "Continue practicing safe sex habits",
+      "Maintain regular STI testing (annually)",
+      "Use protection consistently",
+      "Get vaccinated for HPV and Hepatitis B"
+    ],
+    "moderate_risk": [
+      "Schedule STI testing within 2 weeks",
+      "Discuss sexual history with partner(s)",
+      "Use protection consistently",
+      "Consider PrEP if at HIV risk"
+    ],
+    "high_risk": [
+      "Schedule STI testing IMMEDIATELY",
+      "Inform recent sexual partners",
+      "Abstain from sexual contact until tested",
+      "Consult a healthcare provider"
+    ],
+    "very_high_risk": [
+      "Seek medical evaluation TODAY",
+      "Notify all recent sexual partners",
+      "Do not engage in sexual activity",
+      "Visit urgent care if symptoms present"
+    ]
+  },
+  
+  "testing_recommendations": {
+    "low_risk": "Annual testing",
+    "moderate_risk": "Within 2 weeks",
+    "high_risk": "Within 1 week",
+    "very_high_risk": "Immediate/Today"
+  },
+  
+  "support_resources": [
+    {
+      "name": "CDC Sexual Health",
+      "url": "https://www.cdc.gov/sexualhealth"
+    },
+    {
+      "name": "Planned Parenthood",
+      "url": "https://www.plannedparenthood.org"
+    },
+    {
+      "name": "WHO STI Information",
+      "url": "https://www.who.int"
+    }
+  ],
+  
+  "disclaimers": [
+    "For educational purposes only",
+    "Does not replace professional medical advice",
+    "Cannot diagnose any condition",
+    "Always consult a healthcare provider",
+    "Based on self-reported information",
+    "Seek immediate care for severe symptoms"
+  ]
+}
