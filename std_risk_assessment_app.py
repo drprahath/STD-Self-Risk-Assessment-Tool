@@ -1,586 +1,569 @@
 import streamlit as st
 import pandas as pd
-import json
+import sqlite3
 from datetime import datetime
+import hashlib
+import json
+from io import BytesIO
 import os
 
 # Page configuration
 st.set_page_config(
-    page_title="STD Self-Risk Assessment Tool",
+    page_title="STD Risk Assessment Tool v4",
     page_icon="🏥",
     layout="wide",
     initial_sidebar_state="expanded"
 )
 
-# Initialize session state for storing patient records
-if "patients" not in st.session_state:
-    st.session_state.patients = []
-if "current_patient" not in st.session_state:
-    st.session_state.current_patient = None
+# Custom CSS for better styling
+st.markdown("""
+<style>
+    .admin-badge { background-color: #ff6b6b; color: white; padding: 5px 10px; border-radius: 5px; }
+    .user-badge { background-color: #4ecdc4; color: white; padding: 5px 10px; border-radius: 5px; }
+    .success-box { background-color: #d4edda; padding: 15px; border-radius: 5px; border-left: 4px solid #28a745; }
+    .info-box { background-color: #d1ecf1; padding: 15px; border-radius: 5px; border-left: 4px solid #17a2b8; }
+    .warning-box { background-color: #fff3cd; padding: 15px; border-radius: 5px; border-left: 4px solid #ffc107; }
+</style>
+""", unsafe_allow_html=True)
 
-# Risk assessment database
-RISK_FACTORS = {
-    "sexual_partners": {
-        "1": 0,
-        "2-3": 1,
-        "4-5": 2,
-        "6+": 3
-    },
-    "protection_usage": {
-        "Always": 0,
-        "Most of the time": 1,
-        "Sometimes": 2,
-        "Never": 3,
-        "Not applicable": 0
-    },
-    "previous_sti": {
-        "No": 0,
-        "Yes": 2
-    },
-    "partner_history": {
-        "Unknown": 2,
-        "No history": 0,
-        "Has history": 2,
-        "Uncertain": 1
-    },
-    "recent_symptoms": {
-        "No symptoms": 0,
-        "Mild symptoms": 1,
-        "Moderate symptoms": 2,
-        "Severe symptoms": 3
-    },
-    "last_test": {
-        "Within 3 months": 0,
-        "3-6 months ago": 1,
-        "6-12 months ago": 2,
-        "Over 1 year ago": 3,
-        "Never tested": 3
-    }
-}
-
-# STD Information Database
-STD_INFO = {
-    "Chlamydia": {
-        "symptoms": "Unusual discharge, burning during urination, abdominal pain, abnormal menstrual bleeding",
-        "transmission": "Unprotected sexual contact",
-        "treatment": "Antibiotics (Azithromycin or Doxycycline)",
-        "complications": "Pelvic inflammatory disease, infertility, ectopic pregnancy",
-        "testing": "Urine or swab test"
-    },
-    "Gonorrhea": {
-        "symptoms": "Painful urination, pus discharge, pelvic pain, abnormal menstrual bleeding",
-        "transmission": "Unprotected sexual contact",
-        "treatment": "Antibiotics (Ceftriaxone + Azithromycin)",
-        "complications": "Infertility, pelvic inflammatory disease, disseminated infection",
-        "testing": "Urine or swab test"
-    },
-    "Syphilis": {
-        "symptoms": "Painless sores (chancre), rash, fever, swollen lymph nodes",
-        "transmission": "Unprotected sexual contact, blood transfusion, mother to child",
-        "treatment": "Antibiotics (Penicillin)",
-        "complications": "Neurosyphilis, cardiovascular damage, congenital syphilis",
-        "testing": "Blood test (RPR/VDRL and FTA-ABS)"
-    },
-    "Herpes (HSV)": {
-        "symptoms": "Painful blisters, itching, tingling, flu-like symptoms",
-        "transmission": "Unprotected sexual contact, skin-to-skin contact",
-        "treatment": "Antivirals (Acyclovir, Valacyclovir)",
-        "complications": "Recurrent outbreaks, nerve pain, increased HIV risk",
-        "testing": "Blood test or viral culture"
-    },
-    "HPV": {
-        "symptoms": "Genital warts, often asymptomatic",
-        "transmission": "Unprotected sexual contact",
-        "treatment": "Observation, topical treatments, or removal of warts",
-        "complications": "Cervical cancer, anal cancer, genital cancer",
-        "testing": "HPV test, Pap smear for women"
-    },
-    "HIV": {
-        "symptoms": "Early: flu-like; Later: fatigue, fever, lymphadenopathy",
-        "transmission": "Unprotected sexual contact, blood exposure, mother to child",
-        "treatment": "Antiretroviral therapy (ART)",
-        "complications": "AIDS, opportunistic infections",
-        "testing": "Blood test (4th generation), Rapid test"
-    },
-    "Hepatitis B": {
-        "symptoms": "Jaundice, fatigue, abdominal pain, dark urine",
-        "transmission": "Unprotected sexual contact, blood exposure",
-        "treatment": "Supportive care, Antivirals for chronic infection",
-        "complications": "Cirrhosis, hepatic cancer, liver failure",
-        "testing": "Blood test (HBsAg, Anti-HBc)"
-    }
-}
-
-def calculate_risk_score(assessment):
-    """Calculate total risk score from assessment"""
-    score = 0
-    score += RISK_FACTORS["sexual_partners"].get(assessment.get("partners", "1"), 0)
-    score += RISK_FACTORS["protection_usage"].get(assessment.get("protection", "Always"), 0)
-    score += RISK_FACTORS["previous_sti"].get(assessment.get("previous_sti", "No"), 0)
-    score += RISK_FACTORS["partner_history"].get(assessment.get("partner_history", "Unknown"), 0)
-    score += RISK_FACTORS["recent_symptoms"].get(assessment.get("symptoms", "No symptoms"), 0)
-    score += RISK_FACTORS["last_test"].get(assessment.get("last_test", "Never tested"), 0)
-    return score
-
-def get_risk_category(score):
-    """Determine risk category based on score"""
-    if score <= 2:
-        return "LOW RISK", "🟢"
-    elif score <= 5:
-        return "MODERATE RISK", "🟡"
-    elif score <= 9:
-        return "HIGH RISK", "🔴"
-    else:
-        return "VERY HIGH RISK", "🔴"
-
-def get_recommendations(score):
-    """Get recommendations based on risk score"""
-    recommendations = []
+# ===== DATABASE SETUP =====
+def init_database():
+    """Initialize SQLite database"""
+    conn = sqlite3.connect('std_assessment.db')
+    c = conn.cursor()
     
-    if score <= 2:
-        recommendations.append("✓ Continue practicing safe sex habits")
-        recommendations.append("✓ Maintain regular STI testing (annually or as recommended)")
-        recommendations.append("✓ Use protection consistently")
-        recommendations.append("✓ Get vaccinated for HPV and Hepatitis B if eligible")
-    elif score <= 5:
-        recommendations.append("⚠ Schedule STI testing within 2 weeks")
-        recommendations.append("⚠ Discuss sexual history with partner(s)")
-        recommendations.append("⚠ Use protection consistently for all sexual activities")
-        recommendations.append("⚠ Consider PrEP (Pre-exposure prophylaxis) if at risk for HIV")
-        recommendations.append("⚠ Get HPV and Hepatitis B vaccination if not already done")
-    elif score <= 9:
-        recommendations.append("⚠⚠ Schedule STI testing IMMEDIATELY (within 1 week)")
-        recommendations.append("⚠⚠ Inform recent sexual partners to get tested")
-        recommendations.append("⚠⚠ Abstain from sexual contact until tested and cleared")
-        recommendations.append("⚠⚠ Use protection strictly for all future sexual activities")
-        recommendations.append("⚠⚠ Consult a healthcare provider about PrEP")
-        recommendations.append("⚠⚠ Inform your healthcare provider about symptoms")
-    else:
-        recommendations.append("🔴 URGENT: Schedule testing TODAY or visit urgent care")
-        recommendations.append("🔴 Seek immediate medical evaluation if experiencing symptoms")
-        recommendations.append("🔴 Notify all recent sexual partners for testing")
-        recommendations.append("🔴 Abstain from sexual contact until cleared by healthcare provider")
-        recommendations.append("🔴 Do not delay - seek professional medical advice immediately")
+    # Users table
+    c.execute('''CREATE TABLE IF NOT EXISTS users (
+        id INTEGER PRIMARY KEY,
+        user_id TEXT UNIQUE NOT NULL,
+        password_hash TEXT,
+        user_type TEXT,
+        name TEXT,
+        email TEXT,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )''')
     
-    return recommendations
-
-def save_patient_data():
-    """Save patient data to JSON file"""
-    if st.session_state.patients:
-        filepath = "patient_records.json"
-        with open(filepath, "w") as f:
-            json.dump(st.session_state.patients, f, indent=4, default=str)
-
-def load_patient_data():
-    """Load patient data from JSON file"""
-    if os.path.exists("patient_records.json"):
-        with open("patient_records.json", "r") as f:
-            st.session_state.patients = json.load(f)
-
-# Main app
-def main():
-    # Header
-    col1, col2 = st.columns([4, 1])
-    with col1:
-        st.title("🏥 STD Self-Risk Assessment Tool")
+    # Assessments table
+    c.execute('''CREATE TABLE IF NOT EXISTS assessments (
+        id INTEGER PRIMARY KEY,
+        user_id TEXT NOT NULL,
+        name TEXT,
+        age INTEGER,
+        email TEXT,
+        phone TEXT,
+        responses TEXT,
+        risk_score INTEGER,
+        risk_level TEXT,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY(user_id) REFERENCES users(user_id)
+    )''')
     
+    conn.commit()
+    conn.close()
+
+init_database()
+
+# ===== AUTHENTICATION FUNCTIONS =====
+def hash_password(password):
+    """Hash password using SHA256"""
+    return hashlib.sha256(password.encode()).hexdigest()
+
+def verify_admin(admin_id, password):
+    """Verify admin credentials"""
+    conn = sqlite3.connect('std_assessment.db')
+    c = conn.cursor()
+    c.execute('SELECT password_hash, user_type FROM users WHERE user_id = ?', (admin_id,))
+    result = c.fetchone()
+    conn.close()
+    
+    if result and result[1] == 'admin':
+        return hash_password(password) == result[0]
+    return False
+
+def verify_user(user_id):
+    """Verify user exists (no password needed)"""
+    conn = sqlite3.connect('std_assessment.db')
+    c = conn.cursor()
+    c.execute('SELECT user_type FROM users WHERE user_id = ?', (user_id,))
+    result = c.fetchone()
+    conn.close()
+    
+    return result and result[0] == 'user'
+
+def create_admin_account(admin_id, password, name, email):
+    """Create admin account"""
+    try:
+        conn = sqlite3.connect('std_assessment.db')
+        c = conn.cursor()
+        c.execute('''INSERT INTO users (user_id, password_hash, user_type, name, email) 
+                     VALUES (?, ?, ?, ?, ?)''',
+                  (admin_id, hash_password(password), 'admin', name, email))
+        conn.commit()
+        conn.close()
+        return True, "Admin account created successfully"
+    except sqlite3.IntegrityError:
+        return False, "Admin ID already exists"
+
+def create_user_account(user_id, name, email, phone):
+    """Create user account (no password)"""
+    try:
+        conn = sqlite3.connect('std_assessment.db')
+        c = conn.cursor()
+        c.execute('''INSERT INTO users (user_id, user_type, name, email) 
+                     VALUES (?, ?, ?, ?)''',
+                  (user_id, 'user', name, email))
+        conn.commit()
+        conn.close()
+        return True, "User account created successfully"
+    except sqlite3.IntegrityError:
+        return False, "User ID already exists"
+
+# ===== LOGIN PAGE =====
+def login_page():
+    """Render login page"""
+    st.title("🏥 STD Self-Risk Assessment Tool v4.0")
     st.markdown("---")
-    st.write("This tool helps you understand your personal STD risk status and provides guidance on what steps to take next.")
-    st.write("**Disclaimer:** This tool is for educational purposes only and does not replace professional medical advice.")
-    
-    # Navigation
-    page = st.sidebar.radio(
-        "Navigation",
-        ["Home", "New Assessment", "View Records", "STD Information", "About"]
-    )
-    
-    if page == "Home":
-        show_home()
-    elif page == "New Assessment":
-        show_assessment()
-    elif page == "View Records":
-        show_records()
-    elif page == "STD Information":
-        show_std_info()
-    elif page == "About":
-        show_about()
-
-def show_home():
-    st.header("Welcome to STD Self-Risk Assessment Tool")
     
     col1, col2 = st.columns(2)
     
     with col1:
-        st.subheader("📋 Features")
-        st.write("""
-        - **Personal Risk Assessment**: Answer a few questions about your sexual health
-        - **Risk Scoring**: Get a comprehensive risk score based on multiple factors
-        - **Personalized Recommendations**: Receive tailored guidance based on your risk level
-        - **STD Information**: Learn about common STDs, symptoms, and treatments
-        - **Patient Records**: Store and track your assessment history
-        """)
+        st.header("👨‍⚕️ Admin Login")
+        admin_id = st.text_input("Admin ID", key="admin_id")
+        admin_password = st.text_input("Password", type="password", key="admin_password")
+        
+        if st.button("🔓 Admin Login", key="admin_login_btn"):
+            if verify_admin(admin_id, admin_password):
+                st.session_state.logged_in = True
+                st.session_state.user_type = 'admin'
+                st.session_state.user_id = admin_id
+                st.success("✅ Admin login successful!")
+                st.rerun()
+            else:
+                st.error("❌ Invalid admin ID or password")
+        
+        st.markdown("---")
+        st.subheader("Create Admin Account (First Time)")
+        with st.expander("Create New Admin Account"):
+            new_admin_id = st.text_input("New Admin ID", key="new_admin_id")
+            new_admin_password = st.text_input("Password", type="password", key="new_admin_password")
+            new_admin_name = st.text_input("Full Name", key="new_admin_name")
+            new_admin_email = st.text_input("Email", key="new_admin_email")
+            
+            if st.button("Create Admin Account", key="create_admin_btn"):
+                if new_admin_id and new_admin_password and new_admin_name:
+                    success, message = create_admin_account(new_admin_id, new_admin_password, new_admin_name, new_admin_email)
+                    if success:
+                        st.success(message)
+                    else:
+                        st.error(message)
+                else:
+                    st.warning("Please fill all required fields")
     
     with col2:
-        st.subheader("🎯 Risk Categories")
-        st.markdown("""
-        - 🟢 **Low Risk**: Score 0-2
-        - 🟡 **Moderate Risk**: Score 3-5
-        - 🔴 **High Risk**: Score 6-9
-        - 🔴 **Very High Risk**: Score 10+
-        """)
-    
-    st.markdown("---")
-    st.subheader("Getting Started")
-    st.write("1. Click on **'New Assessment'** to start your self-risk assessment")
-    st.write("2. Answer all questions honestly for accurate results")
-    st.write("3. Review your risk score and personalized recommendations")
-    st.write("4. Follow the recommended next steps")
-
-def show_assessment():
-    st.header("STD Self-Risk Assessment")
-    
-    with st.form("risk_assessment_form"):
-        st.subheader("Personal Information")
-        name = st.text_input("Full Name *", placeholder="Enter your full name")
-        age = st.number_input("Age *", min_value=13, max_value=120, step=1)
-        gender = st.selectbox("Gender *", ["Select...", "Male", "Female", "Non-binary", "Prefer not to say"])
-        email = st.text_input("Email (optional)", placeholder="your.email@example.com")
+        st.header("👤 User Login")
+        user_id = st.text_input("User ID (No Password Required)", key="user_id")
+        user_name = st.text_input("Your Full Name", key="user_name")
+        user_email = st.text_input("Your Email", key="user_email")
         
-        st.markdown("---")
-        st.subheader("Sexual History & Behavior")
-        
-        partners = st.selectbox(
-            "Number of sexual partners in the last 12 months *",
-            ["1", "2-3", "4-5", "6+"],
-            help="This includes all types of sexual contact"
-        )
-        
-        protection = st.selectbox(
-            "How often do you use protection (condoms/barriers)? *",
-            ["Always", "Most of the time", "Sometimes", "Never", "Not applicable"],
-            help="Protection is important for preventing STI transmission"
-        )
-        
-        st.markdown("---")
-        st.subheader("Medical & Testing History")
-        
-        previous_sti = st.selectbox(
-            "Have you had any STI (Sexually Transmitted Infection) before? *",
-            ["No", "Yes"],
-            help="Includes any previously diagnosed STI"
-        )
-        
-        partner_history = st.selectbox(
-            "Do you know if any of your recent partners have had STIs? *",
-            ["Unknown", "No history", "Has history", "Uncertain"],
-            help="This information helps assess transmission risk"
-        )
-        
-        last_test = st.selectbox(
-            "When was your last STI test? *",
-            ["Within 3 months", "3-6 months ago", "6-12 months ago", "Over 1 year ago", "Never tested"],
-            help="Regular testing is recommended for sexually active individuals"
-        )
-        
-        st.markdown("---")
-        st.subheader("Current Health Status")
-        
-        symptoms = st.selectbox(
-            "Are you currently experiencing any of these symptoms? *",
-            ["No symptoms", "Mild symptoms", "Moderate symptoms", "Severe symptoms"],
-            help="Unusual discharge, pain during urination, genital sores, rash, or pelvic pain"
-        )
-        
-        if symptoms != "No symptoms":
-            symptom_details = st.text_area(
-                "Please describe your symptoms in detail",
-                placeholder="Describe the symptoms you're experiencing..."
-            )
-        
-        st.markdown("---")
-        
-        # Form submission
-        submitted = st.form_submit_button("📊 Calculate Risk Score", use_container_width=True)
-        
-        if submitted:
-            if not name or gender == "Select...":
-                st.error("Please fill in all required fields marked with *")
-            else:
-                assessment = {
-                    "name": name,
-                    "age": age,
-                    "gender": gender,
-                    "email": email,
-                    "partners": partners,
-                    "protection": protection,
-                    "previous_sti": previous_sti,
-                    "partner_history": partner_history,
-                    "last_test": last_test,
-                    "symptoms": symptoms,
-                    "assessment_date": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                }
-                
-                if symptoms != "No symptoms":
-                    assessment["symptom_details"] = symptom_details
-                
-                # Calculate risk score
-                risk_score = calculate_risk_score(assessment)
-                risk_category, risk_emoji = get_risk_category(risk_score)
-                
-                # Store assessment
-                assessment["risk_score"] = risk_score
-                assessment["risk_category"] = risk_category
-                st.session_state.patients.append(assessment)
-                save_patient_data()
-                
-                # Display results
-                st.success("Assessment completed! Here are your results:")
-                
-                st.markdown("---")
-                st.subheader("📊 Your Risk Assessment Results")
-                
-                col1, col2, col3 = st.columns(3)
-                with col1:
-                    st.metric("Risk Score", f"{risk_score}/18")
-                with col2:
-                    st.metric("Risk Category", f"{risk_emoji} {risk_category}")
-                with col3:
-                    st.metric("Assessment Date", assessment["assessment_date"])
-                
-                st.markdown("---")
-                st.subheader("💡 Personalized Recommendations")
-                
-                recommendations = get_recommendations(risk_score)
-                for rec in recommendations:
-                    st.write(rec)
-                
-                st.markdown("---")
-                st.subheader("⚕️ Next Steps")
-                
-                if risk_score <= 2:
-                    st.info("""
-                    ✓ Your risk level is low. Continue to:
-                    - Practice safe sex consistently
-                    - Get tested annually
-                    - Maintain open communication with partners
-                    - Stay vaccinated against preventable STIs
-                    """)
-                elif risk_score <= 5:
-                    st.warning("""
-                    ⚠️ Your risk level is moderate. Please:
-                    - Schedule an STI test within 2 weeks
-                    - Use protection for all sexual activities
-                    - Inform your partners to get tested
-                    - Consider speaking with a healthcare provider
-                    """)
-                elif risk_score <= 9:
-                    st.error("""
-                    ⚠️⚠️ Your risk level is high. Please:
-                    - Schedule an STI test IMMEDIATELY
-                    - Visit a clinic or healthcare provider within 1 week
-                    - Inform all recent sexual partners
-                    - Abstain from sexual contact until tested
-                    """)
-                else:
-                    st.error("""
-                    🔴 Your risk level is VERY HIGH. URGENT ACTION NEEDED:
-                    - Seek medical evaluation TODAY
-                    - Visit an urgent care or emergency department if necessary
-                    - Notify all recent sexual partners immediately
-                    - Do not engage in sexual activity until cleared by a healthcare provider
-                    """)
-                
-                st.markdown("---")
-                st.info("Your assessment has been saved. You can view your records in the 'View Records' section.")
-
-def show_records():
-    st.header("Patient Records")
-    
-    if not st.session_state.patients:
-        st.info("No records found. Start a new assessment to create your first record.")
-    else:
-        st.subheader(f"Total Assessments: {len(st.session_state.patients)}")
-        
-        # Create dataframe for display
-        records_data = []
-        for i, patient in enumerate(st.session_state.patients):
-            records_data.append({
-                "ID": i + 1,
-                "Name": patient["name"],
-                "Date": patient["assessment_date"],
-                "Age": patient["age"],
-                "Risk Score": patient["risk_score"],
-                "Risk Category": patient["risk_category"]
-            })
-        
-        df = pd.DataFrame(records_data)
-        st.dataframe(df, use_container_width=True)
-        
-        st.markdown("---")
-        st.subheader("View Detailed Record")
-        
-        if st.session_state.patients:
-            record_index = st.selectbox(
-                "Select a record to view details:",
-                range(len(st.session_state.patients)),
-                format_func=lambda i: f"{st.session_state.patients[i]['name']} - {st.session_state.patients[i]['assessment_date']}"
-            )
-            
-            patient = st.session_state.patients[record_index]
-            
-            col1, col2 = st.columns(2)
-            with col1:
-                st.write(f"**Name:** {patient['name']}")
-                st.write(f"**Age:** {patient['age']}")
-                st.write(f"**Gender:** {patient['gender']}")
-                st.write(f"**Email:** {patient.get('email', 'Not provided')}")
-            with col2:
-                st.write(f"**Assessment Date:** {patient['assessment_date']}")
-                st.write(f"**Risk Score:** {patient['risk_score']}/18")
-                st.write(f"**Risk Category:** {patient['risk_category']}")
-            
-            st.markdown("---")
-            st.subheader("Assessment Details")
-            
-            col1, col2 = st.columns(2)
-            with col1:
-                st.write(f"**Sexual Partners (12 months):** {patient['partners']}")
-                st.write(f"**Protection Usage:** {patient['protection']}")
-                st.write(f"**Previous STI:** {patient['previous_sti']}")
-            with col2:
-                st.write(f"**Partner History:** {patient['partner_history']}")
-                st.write(f"**Last Test:** {patient['last_test']}")
-                st.write(f"**Current Symptoms:** {patient['symptoms']}")
-            
-            if "symptom_details" in patient:
-                st.markdown("---")
-                st.write(f"**Symptom Details:** {patient['symptom_details']}")
-            
-            st.markdown("---")
-            st.subheader("Recommendations")
-            recommendations = get_recommendations(patient['risk_score'])
-            for rec in recommendations:
-                st.write(rec)
-            
-            # Delete record option
-            if st.button("🗑️ Delete This Record", key=f"delete_{record_index}"):
-                del st.session_state.patients[record_index]
-                save_patient_data()
-                st.success("Record deleted successfully!")
+        if st.button("✅ User Login", key="user_login_btn"):
+            if verify_user(user_id):
+                st.session_state.logged_in = True
+                st.session_state.user_type = 'user'
+                st.session_state.user_id = user_id
+                st.success("✅ User login successful!")
                 st.rerun()
+            else:
+                st.warning("User ID not found. Creating new account...")
+                success, message = create_user_account(user_id, user_name, user_email, "")
+                if success:
+                    st.session_state.logged_in = True
+                    st.session_state.user_type = 'user'
+                    st.session_state.user_id = user_id
+                    st.success(message)
+                    st.rerun()
+                else:
+                    st.error(message)
+        
+        st.markdown("---")
+        st.info("💡 **User Login Info:** No password needed! Just enter your User ID and name to get started.")
 
-def show_std_info():
-    st.header("STD Information & Resources")
+# ===== ASSESSMENT QUESTIONS =====
+ASSESSMENT_QUESTIONS = {
+    1: {
+        "question": "What is your age group?",
+        "options": {
+            "13-19": 2,
+            "20-29": 2,
+            "30-39": 1,
+            "40+": 0
+        }
+    },
+    2: {
+        "question": "Number of sexual partners in the past year?",
+        "options": {
+            "None": 0,
+            "1 partner": 1,
+            "2-5 partners": 2,
+            "More than 5": 3
+        }
+    },
+    3: {
+        "question": "How often do you use condoms?",
+        "options": {
+            "Always": 0,
+            "Usually": 1,
+            "Sometimes": 2,
+            "Never": 3
+        }
+    },
+    4: {
+        "question": "Have you been diagnosed with an STI before?",
+        "options": {
+            "No": 0,
+            "Yes, but treated": 2,
+            "Yes, current": 3
+        }
+    },
+    5: {
+        "question": "Do you know your partner's STI status?",
+        "options": {
+            "Yes, negative": 0,
+            "Uncertain": 2,
+            "Not discussed": 3
+        }
+    },
+    6: {
+        "question": "Are you experiencing any symptoms?",
+        "options": {
+            "No symptoms": 0,
+            "Mild symptoms": 2,
+            "Significant symptoms": 3
+        }
+    },
+    7: {
+        "question": "Have you had unprotected sex in past 3 months?",
+        "options": {
+            "No": 0,
+            "Yes, once": 2,
+            "Yes, multiple times": 3
+        }
+    },
+    8: {
+        "question": "Any other health conditions affecting immunity?",
+        "options": {
+            "No": 0,
+            "Diabetes": 1,
+            "HIV/AIDS": 3
+        }
+    },
+    9: {
+        "question": "When was your last STI test?",
+        "options": {
+            "Less than 3 months ago": 0,
+            "3-12 months ago": 1,
+            "More than 1 year ago": 2,
+            "Never tested": 3
+        }
+    },
+    10: {
+        "question": "Are you taking PrEP (Pre-exposure prophylaxis)?",
+        "options": {
+            "Yes, regularly": 0,
+            "No": 2
+        }
+    },
+    11: {
+        "question": "Have you received HPV vaccination?",
+        "options": {
+            "Yes, complete": 0,
+            "Partial": 1,
+            "No": 2
+        }
+    },
+    12: {
+        "question": "Do you have access to regular sexual health education?",
+        "options": {
+            "Yes": 0,
+            "Limited": 1,
+            "No": 2
+        }
+    }
+}
+
+RISK_CATEGORIES = {
+    (0, 6): ("🟢 Lower Risk", "Your risk level is relatively low. Continue preventive practices."),
+    (7, 15): ("🟡 Moderate Risk", "You have moderate risk. Get tested and consider preventive measures."),
+    (16, 25): ("🔴 Higher Risk", "You have higher risk. Urgent testing and consultation recommended."),
+    (26, 36): ("🔴 Very High Risk", "You have very high risk. Immediate medical consultation required."),
+}
+
+def get_risk_level(score):
+    """Get risk level based on score"""
+    for (min_score, max_score), (level, recommendation) in RISK_CATEGORIES.items():
+        if min_score <= score <= max_score:
+            return level, recommendation
+    return "Unknown", "Unable to determine risk level"
+
+# ===== USER ASSESSMENT FLOW =====
+def user_assessment_page():
+    """User assessment form"""
+    st.header("📋 New Assessment")
+    st.info("Please answer all questions honestly for accurate results. Your responses are kept private.")
     
-    st.write("Learn about common sexually transmitted infections, their symptoms, and treatments.")
+    # Personal details
+    st.subheader("👤 Personal Details")
+    col1, col2 = st.columns(2)
+    with col1:
+        name = st.text_input("Full Name", key="assess_name")
+        age = st.number_input("Age", min_value=13, max_value=100, key="assess_age")
+    with col2:
+        email = st.text_input("Email", key="assess_email")
+        phone = st.text_input("Phone Number", key="assess_phone")
     
-    selected_std = st.selectbox("Select an STI to learn more:", list(STD_INFO.keys()))
+    # Assessment questions
+    st.subheader("🔍 Assessment Questions")
+    responses = {}
+    total_score = 0
     
-    if selected_std:
-        info = STD_INFO[selected_std]
+    for q_num, q_data in ASSESSMENT_QUESTIONS.items():
+        st.markdown(f"**Question {q_num}/12:** {q_data['question']}")
+        response = st.radio(
+            label=f"Select option for Q{q_num}",
+            options=list(q_data['options'].keys()),
+            key=f"q{q_num}",
+            label_visibility="collapsed"
+        )
+        responses[q_num] = response
+        total_score += q_data['options'][response]
+        st.markdown("---")
+    
+    # Preview and submit
+    col1, col2 = st.columns(2)
+    with col1:
+        if st.button("👁️ Preview Results", key="preview_btn"):
+            risk_level, recommendation = get_risk_level(total_score)
+            st.markdown(f"<div class='info-box'><h3>Preview: Your Risk Score</h3><h2>{total_score}/36</h2><p>{risk_level}</p><p>{recommendation}</p></div>", unsafe_allow_html=True)
+    
+    with col2:
+        if st.button("✅ Final Submit", key="submit_btn"):
+            if name and email:
+                conn = sqlite3.connect('std_assessment.db')
+                c = conn.cursor()
+                c.execute('''INSERT INTO assessments (user_id, name, age, email, phone, responses, risk_score, risk_level)
+                             VALUES (?, ?, ?, ?, ?, ?, ?, ?)''',
+                          (st.session_state.user_id, name, age, email, phone, 
+                           json.dumps(responses), total_score, risk_level))
+                conn.commit()
+                conn.close()
+                
+                st.success("✅ Assessment submitted successfully!")
+                st.balloons()
+                
+                # Show results
+                st.markdown(f"<div class='success-box'><h3>Your Assessment Results</h3><h2>{total_score}/36</h2><p><strong>{risk_level}</strong></p><p>{recommendation}</p></div>", unsafe_allow_html=True)
+            else:
+                st.error("Please fill in name and email before submitting")
+
+# ===== ADMIN DASHBOARD =====
+def admin_dashboard():
+    """Admin control panel"""
+    st.header("👨‍⚕️ Admin Dashboard")
+    
+    # Admin menu
+    admin_menu = st.sidebar.radio(
+        "Admin Menu",
+        ["📊 Dashboard", "👥 View All Records", "✏️ Edit Records", "📥 Export Data", "⚙️ Settings"]
+    )
+    
+    if admin_menu == "📊 Dashboard":
+        st.subheader("Dashboard Overview")
         
-        col1, col2 = st.columns([1, 2])
+        conn = sqlite3.connect('std_assessment.db')
+        c = conn.cursor()
         
+        # Statistics
+        col1, col2, col3, col4 = st.columns(4)
+        
+        c.execute('SELECT COUNT(*) FROM assessments')
+        total_assessments = c.fetchone()[0]
         with col1:
-            st.subheader(selected_std)
+            st.metric("Total Assessments", total_assessments)
         
-        st.markdown("---")
+        c.execute('SELECT COUNT(DISTINCT user_id) FROM assessments')
+        total_users = c.fetchone()[0]
+        with col2:
+            st.metric("Total Users", total_users)
         
-        st.subheader("Symptoms")
-        st.write(info["symptoms"])
+        c.execute('SELECT AVG(risk_score) FROM assessments')
+        avg_risk = c.fetchone()[0] or 0
+        with col3:
+            st.metric("Avg Risk Score", f"{avg_risk:.1f}")
         
-        st.markdown("---")
+        c.execute('SELECT COUNT(*) FROM assessments WHERE risk_score >= 26')
+        high_risk = c.fetchone()[0]
+        with col4:
+            st.metric("High Risk Cases", high_risk)
         
-        st.subheader("Transmission")
-        st.write(info["transmission"])
+        # Risk distribution chart
+        st.subheader("Risk Level Distribution")
+        c.execute('''SELECT risk_level, COUNT(*) FROM assessments GROUP BY risk_level''')
+        data = c.fetchall()
         
-        st.markdown("---")
+        if data:
+            df_risk = pd.DataFrame(data, columns=['Risk Level', 'Count'])
+            st.bar_chart(df_risk.set_index('Risk Level'))
         
-        st.subheader("Treatment")
-        st.write(info["treatment"])
+        conn.close()
+    
+    elif admin_menu == "👥 View All Records":
+        st.subheader("All Patient Records")
         
-        st.markdown("---")
+        conn = sqlite3.connect('std_assessment.db')
+        df = pd.read_sql_query('''SELECT id, user_id, name, age, email, risk_score, risk_level, created_at FROM assessments
+                                   ORDER BY created_at DESC''', conn)
+        conn.close()
         
-        st.subheader("Possible Complications")
-        st.write(info["complications"])
+        if not df.empty:
+            st.dataframe(df, use_container_width=True)
+        else:
+            st.info("No assessments found")
+    
+    elif admin_menu == "✏️ Edit Records":
+        st.subheader("Edit Patient Records")
         
-        st.markdown("---")
+        conn = sqlite3.connect('std_assessment.db')
+        c = conn.cursor()
+        c.execute('SELECT id, name, age, email FROM assessments ORDER BY created_at DESC')
+        records = c.fetchall()
+        conn.close()
         
-        st.subheader("Testing")
-        st.write(info["testing"])
+        if records:
+            record_options = [f"{r[1]} (ID: {r[0]})" for r in records]
+            selected_record = st.selectbox("Select Record to Edit", record_options)
+            
+            if selected_record:
+                record_id = int(selected_record.split("ID: ")[1].rstrip(")"))
+                
+                conn = sqlite3.connect('std_assessment.db')
+                c = conn.cursor()
+                c.execute('SELECT name, age, email, phone FROM assessments WHERE id = ?', (record_id,))
+                record = c.fetchone()
+                
+                if record:
+                    st.markdown("**Edit Details:**")
+                    col1, col2 = st.columns(2)
+                    
+                    with col1:
+                        new_name = st.text_input("Name", value=record[0])
+                        new_age = st.number_input("Age", value=record[1], min_value=13, max_value=100)
+                    with col2:
+                        new_email = st.text_input("Email", value=record[2])
+                        new_phone = st.text_input("Phone", value=record[3] or "")
+                    
+                    if st.button("💾 Save Changes"):
+                        c.execute('''UPDATE assessments SET name=?, age=?, email=?, phone=? WHERE id=?''',
+                                  (new_name, new_age, new_email, new_phone, record_id))
+                        conn.commit()
+                        st.success("✅ Record updated successfully!")
+                
+                conn.close()
+        else:
+            st.info("No records to edit")
+    
+    elif admin_menu == "📥 Export Data":
+        st.subheader("Export Patient Data")
         
-        st.markdown("---")
-        st.info("For detailed medical information, please consult with a healthcare provider.")
+        conn = sqlite3.connect('std_assessment.db')
+        df = pd.read_sql_query('''SELECT user_id, name, age, email, phone, risk_score, risk_level, created_at FROM assessments
+                                   ORDER BY created_at DESC''', conn)
+        conn.close()
+        
+        if not df.empty:
+            # Excel export
+            st.markdown("**📊 Export Formats:**")
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                if st.button("📥 Export as Excel"):
+                    output = BytesIO()
+                    with pd.ExcelWriter(output, engine='openpyxl') as writer:
+                        df.to_excel(writer, index=False, sheet_name='Assessments')
+                    output.seek(0)
+                    st.download_button(
+                        label="Download Excel File",
+                        data=output.getvalue(),
+                        file_name=f"assessments_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                    )
+            
+            with col2:
+                if st.button("📥 Export as CSV"):
+                    csv = df.to_csv(index=False)
+                    st.download_button(
+                        label="Download CSV File",
+                        data=csv,
+                        file_name=f"assessments_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+                        mime="text/csv"
+                    )
+        else:
+            st.info("No data to export")
 
-def show_about():
-    st.header("About This Tool")
+# ===== MAIN APP LOGIC =====
+def main():
+    """Main application"""
     
-    st.write("""
-    ## Purpose
-    This STD Self-Risk Assessment Tool is designed to:
-    - Help individuals understand their personal risk factors for STIs
-    - Provide educational information about common STDs
-    - Recommend appropriate next steps based on risk assessment
-    - Encourage regular testing and safe sexual practices
+    # Initialize session state
+    if 'logged_in' not in st.session_state:
+        st.session_state.logged_in = False
+        st.session_state.user_type = None
+        st.session_state.user_id = None
     
-    ## Important Disclaimer
-    ⚠️ **This tool is for educational purposes ONLY and does not constitute medical advice.**
-    - Results are based on self-reported information
-    - A healthcare provider's evaluation is necessary for diagnosis
-    - Always consult a medical professional for any health concerns
-    - This tool cannot diagnose or treat any condition
+    # Logout button in sidebar
+    if st.session_state.logged_in:
+        st.sidebar.markdown("---")
+        if st.sidebar.button("🚪 Logout", key="logout_btn"):
+            st.session_state.logged_in = False
+            st.session_state.user_type = None
+            st.session_state.user_id = None
+            st.rerun()
+        
+        # Show current user
+        if st.session_state.user_type == 'admin':
+            st.sidebar.markdown(f"<div class='admin-badge'>👨‍⚕️ Admin: {st.session_state.user_id}</div>", unsafe_allow_html=True)
+        else:
+            st.sidebar.markdown(f"<div class='user-badge'>👤 User: {st.session_state.user_id}</div>", unsafe_allow_html=True)
     
-    ## When to Seek Medical Care
-    🔴 Seek immediate medical attention if you experience:
-    - Unusual genital discharge or bleeding
-    - Pain during urination or sexual intercourse
-    - Genital sores, blisters, or warts
-    - Unexplained rashes in genital areas
-    - Pelvic or abdominal pain
-    - Fever with other symptoms
-    - Any other concerning symptoms
-    
-    ## STI Testing
-    Regular STI testing is recommended if you:
-    - Are sexually active
-    - Have multiple partners
-    - Are starting a new relationship
-    - Have had unprotected sex
-    - Are pregnant
-    - Have symptoms of an STI
-    
-    ## Prevention
-    Best practices to reduce STI risk:
-    ✓ Use condoms and barriers consistently
-    ✓ Get regular STI testing
-    ✓ Communicate with partners about sexual history
-    ✓ Avoid sexual contact with untreated partners
-    ✓ Get vaccinated (HPV, Hepatitis B)
-    ✓ Limit number of sexual partners
-    ✓ Seek treatment immediately if diagnosed
-    
-    ## Resources
-    - CDC Sexual Health Information: www.cdc.gov/sexualhealth
-    - Planned Parenthood: www.plannedparenthood.org
-    - WHO STI Information: www.who.int
-    - Local Health Department websites
-    
-    ## Data Privacy
-    Your assessment data is stored locally on this device. Please ensure:
-    - Keep your assessment records secure
-    - Share results only with healthcare providers
-    - Delete records when no longer needed
-    """)
-    
-    st.markdown("---")
-    st.subheader("Version & Support")
-    st.write("**Version:** 1.0")
-    st.write("**Last Updated:** November 2024")
-    st.write("**Support:** Consult your healthcare provider or local health department for assistance")
+    # Render appropriate page
+    if not st.session_state.logged_in:
+        login_page()
+    elif st.session_state.user_type == 'admin':
+        admin_dashboard()
+    else:  # Regular user
+        st.header("🏥 STD Self-Risk Assessment Tool")
+        user_menu = st.sidebar.radio("Menu", ["📋 New Assessment", "📊 My Records", "📚 Information", "❓ About"])
+        
+        if user_menu == "📋 New Assessment":
+            user_assessment_page()
+        elif user_menu == "📊 My Records":
+            st.subheader("My Assessment Records")
+            conn = sqlite3.connect('std_assessment.db')
+            df = pd.read_sql_query('''SELECT created_at, risk_score, risk_level FROM assessments 
+                                       WHERE user_id = ? ORDER BY created_at DESC''',
+                                   conn, params=(st.session_state.user_id,))
+            conn.close()
+            if not df.empty:
+                st.dataframe(df, use_container_width=True)
+            else:
+                st.info("No assessments yet")
+        elif user_menu == "📚 Information":
+            st.subheader("STD Information & Resources")
+            st.info("📖 Coming soon - Comprehensive STD information and resources")
+        elif user_menu == "❓ About":
+            st.subheader("About This Tool")
+            st.markdown("""
+            This tool helps you assess your STD risk based on various factors.
+            **Standards:** NACO, TANSACS, CDC, WHO
+            """)
 
-# Load existing patient data on startup
-load_patient_data()
-
-# Run the app
 if __name__ == "__main__":
     main()
